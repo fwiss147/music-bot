@@ -1,3 +1,11 @@
+def drop_player(guild_id: int) -> GuildPlayer | None:
+    player = players.pop(guild_id, None)
+    if player is not None:
+        if player.idle_task is not None:
+            player.idle_task.cancel()
+            player.idle_task = None
+        stop_progress_updater(player)
+    return player
 def load_opus() -> None:
     try:
         if discord.opus.is_loaded():
