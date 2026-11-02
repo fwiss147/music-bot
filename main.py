@@ -4,12 +4,24 @@ import shutil
 
 import discord
 from discord import app_commands
-for _opus_path in ("/root/.nix-profile/lib/libopus.so.0", "/root/.nix-profile/lib/libopus.so", "libopus.so.0"):
-    if not discord.opus.is_loaded():
-        try:
-            discord.opus.load_opus(_opus_path)
-        except Exception:
-            pass
+import glob
+import ctypes.util
+
+if not discord.opus.is_loaded():
+    _opus_Paths = (
+        glob.glob("/nix/store/*opus*/lib/libopus.so*")
+        + glob.glob("/root/.nix-profile/lib/libopus.so*")
+        + glob.glob("/usr/lib/**/libopus.so*", recursive=True)
+        + [ctypes.util.find_library("opus"), "libopus.so.0", "libopus.so"]
+    )
+    for _p in _opus_Paths:
+        if _p:
+            try:
+                discord.opus.load_opus(_p)
+                if discord.opus.is_loaded():
+                    break
+            except Exception:
+                continue
 from config import GUILD_ID, PREFIX, TOKEN, log
 from src.commands import PREFIX_ALIASES, PrefixInteraction, _reply, setup_commands
 from src.player import background_tasks, drop_player, idle_leave, load_opus, players, set_bot
