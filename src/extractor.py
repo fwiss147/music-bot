@@ -1,6 +1,9 @@
 import asyncio
 from dataclasses import dataclass
 import functools
+import re
+import urllib.request
+import html
 import yt_dlp
 
 from config import ytdl_options
@@ -35,15 +38,31 @@ def get_platform_meta(platform: str) -> dict:
     return meta_map.get(platform.lower(), meta_map["youtube"])
 
 
+def _resolve_spotify_url(url: str) -> str:
+    """كيحول رابط Spotify لاسم الأغنية والفنان بلا ما يحتاج API Keys"""
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        page = resp.read().decode("utf-8", errors="ignore")
+    title_match = re.search(r'<meta property="og:title" content="([^"]+)"', page)
+    desc_match = re.search(r'<meta property="og:description" content="([^"]+)"', page)
+    title = html.unescape(title_match.group(1)) if title_match else ""
+    artist = ""
+    if desc_match:
+        desc = html.unescape(desc_match.group(1))
+        artist = desc.split("·")[0].strip()
+    if title:
+        return f"{title} {artist}".strip()
+    raise ValueError("Could not resolve Spotify URL.")
+
+
 def _run_ydl(target: str) -> list[dict]:
     opts = ytdl_options()
     opts.update({
-        "format": "bestaudio[protocol^=http]/bestaudio/best",
+        "format": "http_mp3_1_0/bestaudio[protocol^=http][ext=mp3]/bestaudio[protocol^=http]/bestaudio/best",
         "extract_flat": False,
         "socket_timeout": 30,
         "extractor_retries": 2,
         "ignoreerrors": True,
-        "extractor_args": {"youtube": {"player_client": ["ios", "android", "tv"]}},
     })
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(target, download=False)
@@ -54,14 +73,18 @@ def _run_ydl(target: str) -> list[dict]:
         return [info]
 
 
-def _extract_sync(query: str, raw_query: str = "") -> list[dict]:
+def _extract_sync(query: str) -> list[dict]:
+    if "open.spotify.com" in query or "spotify.link" in query:
+        search_terms = _resolve_spotify_url(query)
+        query = f"scsearch1:{search_terms}"
+
     entries = _run_ydl(query)
     if entries:
         return entries
 
-    fallback_q = raw_query or query.removeprefix("ytsearch:").removeprefix("scsearch:")
-    if not fallback_q.startswith(("http://", "https://")):
-        entries = _run_ydl(f"scsearch:{fallback_q}")
+    clean_q = query.removeprefix("ytsearch:").removeprefix("ytsearch1:").removeprefix("scsearch:").removeprefix("scsearch1:")
+    if not clean_q.startswith(("http://", "https://")):
+        entries = _run_ydl(f"scsearch1:{clean_q}")
         if entries:
             return entries
 
@@ -69,20 +92,18 @@ def _extract_sync(query: str, raw_query: str = "") -> list[dict]:
 
 
 async def fetch_song(query: str, requester, platform_hint: str = "youtube") -> list[Song]:
-    search_target = query
-    if not query.startswith(("http://", "https://")):
-        prefix_map = {
-            "spotify": "scsearch:",
-            "youtube": "scsearch:",
-            "soundcloud": "scsearch:",
-        }
-        pfx = prefix_map.get(platform_hint.lower(), "scsearch:")
-        search_target = f"{pfx}{query}"
+    if "spotify.com" in query or "spotify.link" in query:
+        platform_hint = "spotify"
+        search_target = query
+    elif not query.startswith(("http://", "https://")):
+        search_target = f"scsearch1:{query}"
+    else:
+        search_target = query
 
     loop = asyncio.get_running_loop()
     try:
         data_list = await asyncio.wait_for(
-            loop.run_in_executor(None, functools.partial(_extract_sync, search_target, query)),
+            loop.run_in_executor(None, functools.partial(_extract_sync, search_target)),
             timeout=35.0,
         )
     except asyncio.TimeoutError:
@@ -90,7 +111,7 @@ async def fetch_song(query: str, requester, platform_hint: str = "youtube") -> l
 
     songs = []
     for data in data_list:
-        url = data.get("webpage_url") or data.get("url") or f"https://www.youtube.com/watch?v={data.get('id')}"
+        url = data.get("webpage_url") or data.get("url") or query
         duration = int(data.get("duration") or 0)
         m, s = divmod(duration, 60)
         h, m = divmod(m, 60)
@@ -100,18 +121,13 @@ async def fetch_song(query: str, requester, platform_hint: str = "youtube") -> l
 
         stream_url = None
         formats = data.get("formats") or []
-        for f in reversed(formats):
+        for f in formats:
             f_url = f.get("url", "")
-            if f.get("acodec") != "none" and f_url and f.get("protocol") in ("http", "https") and ".m3u8" not in f_url:
+            if f.get("acodec") != "none" and f_url and ".m3u8" not in f_url and f.get("protocol") in ("http", "https"):
                 stream_url = f_url
                 break
         if not stream_url:
-            stream_url = data.get("url")
-        if not stream_url:
-            for f in reversed(formats):
-                if f.get("acodec") != "none" and f.get("url"):
-                    stream_url = f["url"]
-                    break
+            stream_url = data.get("url") or url
 
         songs.append(
             Song(
@@ -124,7 +140,7 @@ async def fetch_song(query: str, requester, platform_hint: str = "youtube") -> l
                 platform=platform_hint.lower(),
                 requester=requester,
                 query=query,
-                stream_url=stream_url or url,
+                stream_url=stream_url,
             )
         )
     return songs
