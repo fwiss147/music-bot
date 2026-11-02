@@ -35,44 +35,57 @@ def get_platform_meta(platform: str) -> dict:
     return meta_map.get(platform.lower(), meta_map["youtube"])
 
 
-def _extract_sync(query: str) -> list[dict]:
+def _run_ydl(target: str) -> list[dict]:
     opts = ytdl_options()
     opts.update({
         "socket_timeout": 30,
-        "extractor_retries": 3,
+        "extractor_retries": 2,
         "ignoreerrors": True,
+        "extractor_args": {"youtube": {"player_client": ["ios", "android", "tv"]}},
     })
     with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(query, download=False)
+        info = ydl.extract_info(target, download=False)
         if not info:
-            raise ValueError("No audio data found.")
+            return []
         if "entries" in info:
-            entries = [e for e in info["entries"] if e is not None]
-            if not entries:
-                raise ValueError("Empty playlist or search result.")
-            return entries
+            return [e for e in info["entries"] if e is not None]
         return [info]
+
+
+def _extract_sync(query: str, raw_query: str = "") -> list[dict]:
+    entries = _run_ydl(query)
+    if entries:
+        return entries
+
+    # Fallback أوتوماتيكي لـ SoundCloud إيلا يوتيوب بلوكا السيرفر
+    fallback_q = raw_query or query.removeprefix("ytsearch:").removeprefix("scsearch:")
+    if not fallback_q.startswith(("http://", "https://")):
+        entries = _run_ydl(f"scsearch:{fallback_q}")
+        if entries:
+            return entries
+
+    raise ValueError("Empty playlist or search result.")
 
 
 async def fetch_song(query: str, requester, platform_hint: str = "youtube") -> list[Song]:
     search_target = query
     if not query.startswith(("http://", "https://")):
         prefix_map = {
-            "spotify": "ytsearch:",
-            "youtube": "ytsearch:",
+            "spotify": "scsearch:",
+            "youtube": "scsearch:",
             "soundcloud": "scsearch:",
         }
-        pfx = prefix_map.get(platform_hint.lower(), "ytsearch:")
+        pfx = prefix_map.get(platform_hint.lower(), "scsearch:")
         search_target = f"{pfx}{query}"
 
     loop = asyncio.get_running_loop()
     try:
         data_list = await asyncio.wait_for(
-            loop.run_in_executor(None, functools.partial(_extract_sync, search_target)),
+            loop.run_in_executor(None, functools.partial(_extract_sync, search_target, query)),
             timeout=35.0,
         )
     except asyncio.TimeoutError:
-        raise TimeoutError("YouTube search timed out. Try again or provide a direct link.")
+        raise TimeoutError("Search timed out. Try again.")
 
     songs = []
     for data in data_list:
