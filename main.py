@@ -4,7 +4,12 @@ import shutil
 
 import discord
 from discord import app_commands
-
+for _opus_path in ("/root/.nix-profile/lib/libopus.so.0", "/root/.nix-profile/lib/libopus.so", "libopus.so.0"):
+    if not discord.opus.is_loaded():
+        try:
+            discord.opus.load_opus(_opus_path)
+        except Exception:
+            pass
 from config import GUILD_ID, PREFIX, TOKEN, log
 from src.commands import PREFIX_ALIASES, PrefixInteraction, _reply, setup_commands
 from src.player import background_tasks, drop_player, idle_leave, load_opus, players, set_bot
