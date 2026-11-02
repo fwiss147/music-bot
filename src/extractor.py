@@ -38,6 +38,8 @@ def get_platform_meta(platform: str) -> dict:
 def _run_ydl(target: str) -> list[dict]:
     opts = ytdl_options()
     opts.update({
+        "format": "bestaudio[protocol^=http]/bestaudio/best",
+        "extract_flat": False,
         "socket_timeout": 30,
         "extractor_retries": 2,
         "ignoreerrors": True,
@@ -57,7 +59,6 @@ def _extract_sync(query: str, raw_query: str = "") -> list[dict]:
     if entries:
         return entries
 
-    # Fallback أوتوماتيكي لـ SoundCloud إيلا يوتيوب بلوكا السيرفر
     fallback_q = raw_query or query.removeprefix("ytsearch:").removeprefix("scsearch:")
     if not fallback_q.startswith(("http://", "https://")):
         entries = _run_ydl(f"scsearch:{fallback_q}")
@@ -97,10 +98,17 @@ async def fetch_song(query: str, requester, platform_hint: str = "youtube") -> l
         if duration == 0:
             dur_str = "LIVE"
 
-        stream_url = data.get("url")
+        stream_url = None
+        formats = data.get("formats") or []
+        for f in reversed(formats):
+            f_url = f.get("url", "")
+            if f.get("acodec") != "none" and f_url and f.get("protocol") in ("http", "https") and ".m3u8" not in f_url:
+                stream_url = f_url
+                break
         if not stream_url:
-            formats = data.get("formats", [])
-            for f in formats:
+            stream_url = data.get("url")
+        if not stream_url:
+            for f in reversed(formats):
                 if f.get("acodec") != "none" and f.get("url"):
                     stream_url = f["url"]
                     break
